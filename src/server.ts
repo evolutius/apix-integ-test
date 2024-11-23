@@ -201,6 +201,16 @@ const dataManager = new DataManager();
 
 const cache = new ApiXRedisStore();
 
+cache.connect()
+  .then(() => {
+    console.log(`\x1b[32mConnected to cache successfully.\x1b[0m`);
+  })
+  .catch(error => {
+    console.error(`\x1b[31mFailed to connect to cache:\x1b[0m`);
+    console.error(`${error}`);
+    process.exit(1);
+  });
+
 //// Methods and Schema Definitions ////
 const getCacheValueMethod: ApiXMethod = {
   entity: 'cache',
