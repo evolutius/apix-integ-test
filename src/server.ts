@@ -207,7 +207,11 @@ cache.connect()
   })
   .catch(error => {
     console.error(`\x1b[31mFailed to connect to cache:\x1b[0m`);
-    console.error(`${error}`);
+
+    if (error instanceof Error) {
+      console.error(`${error.name}: ${error.stack}`);
+    }
+    
     process.exit(1);
   });
 
