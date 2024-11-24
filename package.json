@@ -23,6 +23,7 @@
     "typescript": "^5.6.3"
   },
   "dependencies": {
+    "@evlt/apix": "file:../apix",
     "axios": "^1.7.7",
     "dotenv": "^16.4.5",
     "jsonwebtoken": "^9.0.2",

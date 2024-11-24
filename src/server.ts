@@ -15,7 +15,7 @@ import {
   ApiXUrlQueryParameterPassthroughProcessor,
   ApiXUrlQueryParameter,
   ApiXHttpHeaders
-} from '@evolutius/apix';
+} from '@evlt/apix';
 import { Request } from 'express';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
