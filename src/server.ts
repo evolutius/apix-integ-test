@@ -135,12 +135,9 @@ class DataManager implements ApiXDataManager {
     let quote = await cache.valueForKey(`quote:${id}`) as unknown as Quote;
     if (quote === undefined || quote === null || Object.keys(quote).length === 0) {
       quote = QUOTES[id];
-      console.log(`Got quote dataset: ${JSON.stringify(quote)}`);
       if (quote) {
         await cache.setValueForKey(quote as unknown as Record<string, unknown>, `quote:${id}`);
       }
-    } else {
-      console.log(`Got quote from cache: ${JSON.stringify(quote)}`);
     }
     return quote;
   }

@@ -1,137 +1,65 @@
-import { createHmac } from 'crypto';
-import { isEqual, omit } from 'lodash';
-import axios from 'axios';
+import { isEqual } from 'lodash';
 import dotenv from 'dotenv';
+import {
+  ApiXClient,
+  ApiXHttpMethod,
+  ApiXRequest,
+  ApiXRequestHeaders,
+  ApiXResponse
+} from '@evlt/apix-client';
 
 dotenv.config();
 
-interface Request {
-  readonly method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
-  readonly url: string,
-  readonly data?: object,
-  readonly headers: Record<string, string>
-}
-
-class ApiXClient {
+class ApiXIntegClient {
   public authToken?: string;
+  private client: ApiXClient;
 
-  constructor(private apiKey: string, private appKey: string) {}
-
-  private generateNonce(length: number = 16): string {
-    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-      let nonce = '';
-      for (let i = 0; i < length; i++) {
-        const randomIndex = Math.floor(Math.random() * characters.length);
-        nonce += characters[randomIndex];
-      }
-      return nonce;
+  constructor(apiKey: string, appKey: string) {
+    this.client = new ApiXClient(apiKey, appKey)
   }
-
-  private generateSignature(
-    key: string,
-    endpointPath: string,
-    dateString: string,
-    nonce: string,
-    method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
-    httpBody: Record<string, unknown> = {}
-  ) {
-    const hmac = createHmac('sha256', key);
-    const stringifiedJsonBody = Object.keys(httpBody).length > 0
-      ? JSON.stringify(httpBody, Object.keys(httpBody).sort())
-      : '';
-    const httpBodyBase64 = stringifiedJsonBody.length > 0
-      ? Buffer.from(stringifiedJsonBody, 'binary').toString('base64')
-      : '';
-    const message = `${endpointPath}.${method}.${nonce}.${dateString}.${httpBodyBase64}`;
-    return hmac
-      .update(message, 'utf-8')
-      .digest()
-      .toString('hex');
-  }
-
-  private getRequestHeaders(
-    path: string,
-    httpMethod: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
-    data: Record<string, unknown> = {}
-  ): Record<string, string> {
-    const nonce = this.generateNonce();
-    const date = new Date();
-    const sig = this.generateSignature(
-      this.appKey,
-      path,
-      date.toUTCString(),
-      nonce,
-      httpMethod,
-      data
-    );
-    return {
-      'Content-Type': 'application/json',
-      'X-API-Key': this.apiKey,
-      'X-Signature': sig,
-      'X-Signature-Nonce': nonce,
-      Date: date.toUTCString(),
-      Authorization: this.authToken ? `Bearer ${this.authToken}` : '',
-      'X-Forwarded-Proto': 'https' /// Fake HTTPS
-    }
-  }
-
-  private extractPathFromUrl(url: string): string {
-    try {
-      const parsedUrl = new URL(url); // Parse the URL
-      return parsedUrl.pathname;     // Extract the pathname
-    } catch (error) {
-      console.error('Invalid URL:', error);
-      throw new Error('Failed to parse URL');
-    }
-} 
 
   public request(
     url: string,
-    httpMethod: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
+    httpMethod: ApiXHttpMethod,
     jsonBody?: Record<string, unknown>
-  ): Request {
-    return {
-      method: httpMethod,
-      url,
-      data: jsonBody,
-      headers: this.getRequestHeaders(
-        this.extractPathFromUrl(url),
-        httpMethod,
-        jsonBody
-      )
-    };
+  ): ApiXRequest {
+    const request = this.client.createRequest(
+      new URL(url),
+      httpMethod,
+      jsonBody
+    );
+
+    if (this.authToken) {
+      request.setHeader(ApiXRequestHeaders.Authorization, `Bearer ${this.authToken}`);
+    }
+
+    /// Fake https
+    request.setHeader('X-Forwarded-Proto', 'https');
+
+    return request;
   }
 
-  public async makeRequest(request: Request): Promise<Record<string, unknown>> {
-    try {
-      const response = await axios(request);
-      return response.data;
-    } catch (error) {
-      if (axios.isAxiosError(error)) {
-        return error.response?.data;
-      } else {
-        throw error;
-      }
-    }
+  public async makeRequest(request: ApiXRequest): Promise<ApiXResponse> {
+    return await request.make();
   }
 }
 
 interface TestSequence {
-  readonly run: (client: ApiXClient, lastRequest?: Request) => Promise<[Request, Record<string, unknown>]>; 
-  readonly expectedResponse: Record<string, unknown>;
+  readonly run: (client: ApiXIntegClient, lastRequest?: ApiXRequest) => Promise<[ApiXRequest, ApiXResponse]>;
+  readonly expectedResponse: ApiXResponse;
 }
 
 class TestSequenceRunner {
-  private client: ApiXClient;
+  private client: ApiXIntegClient;
   constructor(private sequences: TestSequence[]) {
-    this.client = new ApiXClient(
+    this.client = new ApiXIntegClient(
       process.env.API_KEY ?? '',
       process.env.APP_KEY ?? ''
     );
   }
 
   public async run() {
-    let lastRequest: Request | undefined;
+    let lastRequest: ApiXRequest | undefined;
     let counter = 1;
     const length = this.sequences.length;
     for (const sequence of this.sequences) {
@@ -160,8 +88,11 @@ const runner = new TestSequenceRunner([
       return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      success: true,
-      message: `Set value for key 'myKey'`
+      data: {
+        success: true,
+        message: `Set value for key 'myKey'`
+      },
+      statusCode: 200
     }
   },
   {
@@ -173,8 +104,11 @@ const runner = new TestSequenceRunner([
       return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      success: true,
-      value: 980
+      data: {
+        success: true,
+        value: 980
+      },
+      statusCode: 200
     }
   },
   {
@@ -184,8 +118,11 @@ const runner = new TestSequenceRunner([
       return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      success: false,
-      message: 'This request is not valid.'
+      statusCode: 401,
+      data: {
+        success: false,
+        message: 'This request is not valid.'
+      }
     }
   },
   {
@@ -199,8 +136,11 @@ const runner = new TestSequenceRunner([
       return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      success: false,
-      message: 'This request is not valid.'
+      statusCode: 401,
+      data: {
+        success: false,
+        message: 'This request is not valid.'
+      }
     }
   },
   {
@@ -210,18 +150,15 @@ const runner = new TestSequenceRunner([
         'http://localhost:3000/cache/myKey',
         'GET'
       );
-      const newRequest: Request = {
-        ...request,
-        headers: {
-          ...request.headers,
-          'X-Signature': 'invalidSignature'
-        }
-      };
-      return [newRequest, await client.makeRequest(newRequest)];
+      request['protectedHeaders']['x-signature'] = 'invalidSignature';
+      return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      success: false,
-      message: 'This request is not valid.'
+      statusCode: 401,
+      data: {
+        success: false,
+        message: 'This request is not valid.'
+      }
     }
   },
   {
@@ -238,8 +175,11 @@ const runner = new TestSequenceRunner([
       return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      success: false,
-      message: 'Invalid username or password.'
+      statusCode: 200,
+      data: {
+        success: false,
+        message: 'Invalid username or password.'
+      }
     }
   },
   {
@@ -252,8 +192,11 @@ const runner = new TestSequenceRunner([
       return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      success: false,
-      message: 'This request is not authorized.'
+      statusCode: 401,
+      data: {
+        success: false,
+        message: 'This request is not authorized.'
+      }
     }
   },
   {
@@ -268,11 +211,15 @@ const runner = new TestSequenceRunner([
         }
       );
       const response = await client.makeRequest(request);
-      client.authToken = response.authToken as string;
-      return [request, omit(response, ['authToken'])];
+      client.authToken = response.data?.authToken as string;
+      delete response.data?.authToken;
+      return [request, response];
     },
     expectedResponse: {
-      success: true
+      statusCode: 200,
+      data: {
+        success: true
+      }
     }
   },
   {
@@ -285,13 +232,16 @@ const runner = new TestSequenceRunner([
       return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      success: true,
-      quote: {
-        id: '0',
-        content: 'I think, therefore I am.',
-        author: 'René Descartes',
-        date: '1637',
-        ownerUserId: 'apix@evoluti.us'
+      statusCode: 200,
+      data: {
+        success: true,
+        quote: {
+          id: '0',
+          content: 'I think, therefore I am.',
+          author: 'René Descartes',
+          date: '1637',
+          ownerUserId: 'apix@evoluti.us'
+        }
       }
     }
   },
@@ -311,8 +261,11 @@ const runner = new TestSequenceRunner([
       return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      success: false,
-      message: 'Invalid request. Invalid HTTP body.'
+      statusCode: 400,
+      data: {
+        success: false,
+        message: 'Invalid request. Invalid HTTP body.'
+      }
     }
   },
   {
@@ -330,13 +283,16 @@ const runner = new TestSequenceRunner([
       return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      success: true,
-      quote: {
-        id: '9',
-        content: 'Why is Gamora?',
-        author: 'Drax the Destroyer',
-        date: '2018',
-        ownerUserId: 'newb'
+      statusCode: 200,
+      data: {
+        success: true,
+        quote: {
+          id: '9',
+          content: 'Why is Gamora?',
+          author: 'Drax the Destroyer',
+          date: '2018',
+          ownerUserId: 'newb'
+        }
       }
     }
   },
@@ -350,13 +306,16 @@ const runner = new TestSequenceRunner([
       return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      success: true,
-      quote: {
-        id: '9',
-        content: 'Why is Gamora?',
-        author: 'Drax the Destroyer',
-        date: '2018',
-        ownerUserId: 'newb'
+      statusCode: 200,
+      data: {
+        success: true,
+        quote: {
+          id: '9',
+          content: 'Why is Gamora?',
+          author: 'Drax the Destroyer',
+          date: '2018',
+          ownerUserId: 'newb'
+        }
       }
     }
   },
@@ -373,8 +332,11 @@ const runner = new TestSequenceRunner([
       return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      success: true,
-      message: 'Successfully deleted quote with ID 9'
+      statusCode: 200,
+      data: {
+        success: true,
+        message: 'Successfully deleted quote with ID 9'
+      }
     }
   },
   {
@@ -390,8 +352,11 @@ const runner = new TestSequenceRunner([
       return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      success: false,
-      message: 'No quote with ID 9 found.'
+      statusCode: 200,
+      data: {
+        success: false,
+        message: 'No quote with ID 9 found.'
+      }
     }
   },
   {
@@ -404,8 +369,11 @@ const runner = new TestSequenceRunner([
       return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      success: false,
-      message: 'Missing required parameter searchTerm'
+      statusCode: 400,
+      data: {
+        success: false,
+        message: 'Missing required parameter searchTerm'
+      }
     }
   },
   {
@@ -418,16 +386,19 @@ const runner = new TestSequenceRunner([
       return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      success: true,
-      quotes: [
-        {
-          id: '7',
-          content: 'I went to the woods because I wished to live deliberately, to front only the essential facts of life, and see if I could not learn what it had to teach, and not, when I came to die, discover that I had not lived.',
-          author: 'Henry David Thoreau',
-          date: '1854',
-          ownerUserId: 'apix@evoluti.us'
-        }
-      ]
+      statusCode: 200,
+      data: {
+        success: true,
+        quotes: [
+          {
+            id: '7',
+            content: 'I went to the woods because I wished to live deliberately, to front only the essential facts of life, and see if I could not learn what it had to teach, and not, when I came to die, discover that I had not lived.',
+            author: 'Henry David Thoreau',
+            date: '1854',
+            ownerUserId: 'apix@evoluti.us'
+          }
+        ]
+      }
     }
   },
   {
@@ -440,23 +411,26 @@ const runner = new TestSequenceRunner([
       return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      success: true,
-      quotes: [
-        {
-          id: '8',
-          content: 'All the world’s a stage, and all the men and women merely players.',
-          author: 'William Shakespeare',
-          date: '1599',
-          ownerUserId: 'apix@evoluti.us'
-        },
-        {
-          id: '2',
-          content: 'To be, or not to be, that is the question.',
-          author: 'William Shakespeare',
-          date: '1600',
-          ownerUserId: 'apix@evoluti.us'
-        },
-      ]
+      statusCode: 200,
+      data: {
+        success: true,
+        quotes: [
+          {
+            id: '8',
+            content: 'All the world’s a stage, and all the men and women merely players.',
+            author: 'William Shakespeare',
+            date: '1599',
+            ownerUserId: 'apix@evoluti.us'
+          },
+          {
+            id: '2',
+            content: 'To be, or not to be, that is the question.',
+            author: 'William Shakespeare',
+            date: '1600',
+            ownerUserId: 'apix@evoluti.us'
+          },
+        ]
+      }
     }
   },
   {
@@ -469,72 +443,75 @@ const runner = new TestSequenceRunner([
       return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      success: true,
-      quotes: [
-        {
-          id: '2',
-          content: 'To be, or not to be, that is the question.',
-          author: 'William Shakespeare',
-          date: '1600',
-          ownerUserId: 'apix@evoluti.us'
-        },
-        {
-          id: '8',
-          content: 'All the world’s a stage, and all the men and women merely players.',
-          author: 'William Shakespeare',
-          date: '1599',
-          ownerUserId: 'apix@evoluti.us'
-        },
-        {
-          id: '3',
-          content: 'The unexamined life is not worth living.',
-          author: 'Socrates',
-          date: '399 BCE',
-          ownerUserId: 'apix@evoluti.us'
-        },
-        {
-          id: '0',
-          content: 'I think, therefore I am.',
-          author: 'René Descartes',
-          date: '1637',
-          ownerUserId: 'apix@evoluti.us'
-        },
-        {
-          id: '4',
-          content: 'Give me liberty, or give me death!',
-          author: 'Patrick Henry',
-          date: 'March 23, 1775',
-          ownerUserId: 'apix@evoluti.us'
-        },
-        {
-          id: '6',
-          content: 'Injustice anywhere is a thread to justice everywhere.',
-          author: 'Martin Luther King Jr.',
-          date: 'April 16, 1963',
-          ownerUserId: 'apix@evoluti.us'
-        },
-        {
-          id: '7',
-          content: 'I went to the woods because I wished to live deliberately, to front only the essential facts of life, and see if I could not learn what it had to teach, and not, when I came to die, discover that I had not lived.',
-          author: 'Henry David Thoreau',
-          date: '1854',
-          ownerUserId: 'apix@evoluti.us'
-        },
-        {
-          id: '1',
-          content: 'The only thing we have to fear is fear itself.',
-          author: 'Franklin D. Roosevelt',
-          date: 'March 4, 1933',
-          ownerUserId: 'apix@evoluti.us'
-        },
-        {
-          id: '5',
-          content: 'Hisashiburi da na, Mugiwara.',
-          author: 'Crocodile',
-          date: '800 PVC',
-          ownerUserId: 'apix@evoluti.us'
-        }
-      ]
+      statusCode: 200,
+      data: {
+        success: true,
+        quotes: [
+          {
+            id: '2',
+            content: 'To be, or not to be, that is the question.',
+            author: 'William Shakespeare',
+            date: '1600',
+            ownerUserId: 'apix@evoluti.us'
+          },
+          {
+            id: '8',
+            content: 'All the world’s a stage, and all the men and women merely players.',
+            author: 'William Shakespeare',
+            date: '1599',
+            ownerUserId: 'apix@evoluti.us'
+          },
+          {
+            id: '3',
+            content: 'The unexamined life is not worth living.',
+            author: 'Socrates',
+            date: '399 BCE',
+            ownerUserId: 'apix@evoluti.us'
+          },
+          {
+            id: '0',
+            content: 'I think, therefore I am.',
+            author: 'René Descartes',
+            date: '1637',
+            ownerUserId: 'apix@evoluti.us'
+          },
+          {
+            id: '4',
+            content: 'Give me liberty, or give me death!',
+            author: 'Patrick Henry',
+            date: 'March 23, 1775',
+            ownerUserId: 'apix@evoluti.us'
+          },
+          {
+            id: '6',
+            content: 'Injustice anywhere is a thread to justice everywhere.',
+            author: 'Martin Luther King Jr.',
+            date: 'April 16, 1963',
+            ownerUserId: 'apix@evoluti.us'
+          },
+          {
+            id: '7',
+            content: 'I went to the woods because I wished to live deliberately, to front only the essential facts of life, and see if I could not learn what it had to teach, and not, when I came to die, discover that I had not lived.',
+            author: 'Henry David Thoreau',
+            date: '1854',
+            ownerUserId: 'apix@evoluti.us'
+          },
+          {
+            id: '1',
+            content: 'The only thing we have to fear is fear itself.',
+            author: 'Franklin D. Roosevelt',
+            date: 'March 4, 1933',
+            ownerUserId: 'apix@evoluti.us'
+          },
+          {
+            id: '5',
+            content: 'Hisashiburi da na, Mugiwara.',
+            author: 'Crocodile',
+            date: '800 PVC',
+            ownerUserId: 'apix@evoluti.us'
+          }
+        ]
+      }
     }
   },
 ]);
