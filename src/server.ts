@@ -6,7 +6,6 @@ import {
   ApiXAccessLevelEvaluator,
   ApiXRedisStore,
   ApiXConfig,
-  ApiXAccessLevel,
   ApiXRequestInputSchema,
   ApiXCacheValue,
   ApiXHttpBodyValidator,
@@ -14,13 +13,21 @@ import {
   ApiXUrlQueryParameterProcessor,
   ApiXUrlQueryParameterPassthroughProcessor,
   ApiXUrlQueryParameter,
-  ApiXHttpHeaders
+  ApiXHttpHeaders,
+  ApiXRequest
 } from '@evlt/apix';
 import { Request } from 'express';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 
 dotenv.config();
+
+const getAuthToken = <
+  QuerySchema extends ApiXRequestInputSchema,
+  BodySchema extends ApiXRequestInputSchema
+>(req: ApiXRequest<QuerySchema, BodySchema>): string | undefined => {
+  return req.header(ApiXHttpHeaders.AuthToken)?.split(' ')[1];
+}
 
 //// Types ////
 interface Quote {
@@ -219,10 +226,11 @@ const getCacheValueMethod: ApiXMethod = {
   characteristics: new Set([ApiXMethodCharacteristic.PublicUnownedData]),
   requestHandler: async (req, res) => {
     const value = await cache.valueForKey(req.params.key);
-    return {
+    const data = {
       success: value !== null && value !== undefined,
       value
     };
+    return { data };
   }
 };
 
@@ -249,10 +257,11 @@ const setCacheValueMethod = {
   requestHandler: async (req, res) => {
     const body = req.jsonBody!;
     await cache.setValueForKey(body.value, body.key, body.ttl);
-    return {
+    const data = {
       success: true,
       message: `Set value for key '${body.key}'`
-    }
+    };
+    return { data };
   }
 } as ApiXMethod<Record<string, never>, SetCacheValueSchema>;
 
@@ -265,14 +274,17 @@ const getQuoteMethod: ApiXMethod = {
     const quote = await dataManager.getQuoteWithId(req.params.id);
 
     if (quote) {
-      return { success: true, quote };
+      const data = { success: true, quote };
+      return { data };
     } else {
-      return {
+      const data = {
         success: false,
         message: `Failed to find quote with id: ${req.params.id}`
       };
+      return { status: 404, data };
     }
-  }
+  },
+  requestorOwnsResource: () => false  /// no consequence
 };
 
 interface AddQuoteSchema extends ApiXRequestInputSchema {
@@ -303,11 +315,13 @@ const addQuoteMethod = {
   requestHandler: (req, res) => {
     const addQuote = req.jsonBody!;
     const quote = dataManager.addQuote(addQuote.content, addQuote.author, addQuote.date);
-    return {
+    const data = {
       success: true,
       quote
-    }
-  }
+    };
+    return { data };
+  },
+  requestorOwnsResource: () => true  // as long as requestor is authenticated, they will own the quote they create
 } as ApiXMethod<Record<string, never>, AddQuoteSchema>;
 
 interface DeleteQuoteSchema extends ApiXRequestInputSchema {
@@ -324,17 +338,29 @@ const deleteQuoteMethod = {
     const { quoteId } = req.jsonBody!;
     try {
       dataManager.deleteQuote(quoteId);
-      return {
+      const data = {
         success: true,
         message: `Successfully deleted quote with ID ${quoteId}`
       }
+      return { data };
     } catch (error) {
       const message = (error as Error).message;
-      return {
+      const data = {
         success: false,
         message
-      }
+      };
+      return { data };
     }
+  },
+  requestorOwnsResource: async (req) => {
+    const { quoteId } = req.jsonBody!;
+    const quote = await dataManager.getQuoteWithId(quoteId);
+    const token = getAuthToken(req);
+    if (token) {
+      const claim = dataManager.verifyToken(token) as { username: string };
+      return claim.username === quote?.ownerUserId;
+    }
+    return true;
   }
 } as ApiXMethod<Record<string, never>, DeleteQuoteSchema>;
 
@@ -385,7 +411,7 @@ const passthroughProcessor = new ApiXUrlQueryParameterPassthroughProcessor();
 const searchQuoteMethod: ApiXMethod<SearchQuoteSchema> = {
   entity: 'quotes',
   method: 'search',
-  characteristics: new Set([ApiXMethodCharacteristic.PublicOwnedData]),
+  characteristics: new Set([ApiXMethodCharacteristic.PublicUnownedData]),
   queryParameters: [
     new ApiXUrlQueryParameter(
       'searchTerm',
@@ -417,10 +443,11 @@ const searchQuoteMethod: ApiXMethod<SearchQuoteSchema> = {
       queryParams.sortKey,
       queryParams.ascendingSort ?? true
     );
-    return {
+    const data = {
       success: true,
       quotes
     };
+    return { data };
   }
 };
 
@@ -438,43 +465,36 @@ const loginMethod = {
   requestHandler: (req, res) => {
     const { username, password } = req.jsonBody!;
     const token = dataManager.login(username, password);
-    return {
+    const data = {
       success: token !== undefined,
       authToken: token,
       message: token !== undefined ? undefined : 'Invalid username or password.'
+    };
+    return {
+      status: token !== undefined ? 200 : 403,
+      data
     };
   }
 } as ApiXMethod<Record<string, never>, UserLoginSchema>;
 
 //// END OF Methods and Schema Definitions ////
 
-class AccessLevelEvaluator implements ApiXAccessLevelEvaluator {
-  evaluate<
-    QuerySchema extends ApiXRequestInputSchema,
-    BodySchema extends ApiXRequestInputSchema
-  >(
-    appMethod: ApiXMethod<QuerySchema, BodySchema>,
-    req: Request
-  ): ApiXAccessLevel | Promise<ApiXAccessLevel> {
-    // For access control. This is the lowest level that has access.
-    return this.isAuthenticated(req)
-      ? ApiXAccessLevel.AuthenticatedRequestor
-      : ApiXAccessLevel.PublicRequestor;
-  }
-
-  authToken(req: Request): string | undefined {
-    return req.header(ApiXHttpHeaders.AuthToken)?.split(' ')[1];
-  }
+class AccessLevelEvaluator extends ApiXAccessLevelEvaluator {
 
   tokenPayload(token: string): string | jwt.JwtPayload | undefined {
     return dataManager.verifyToken(token);
   }
 
-  isAuthenticated(req: Request): boolean {
-    const token = this.authToken(req);
+  protected isAuthenticatedRequestor<
+    QuerySchema extends ApiXRequestInputSchema,
+    BodySchema extends ApiXRequestInputSchema
+  >(
+    req: ApiXRequest<QuerySchema, BodySchema>
+  ): Promise<boolean> | boolean {
+    const token = getAuthToken(req);
     if (token) {
-      const payload = this.tokenPayload(token);
-      return payload !== undefined;
+      const claim = dataManager.verifyToken(token);
+      return claim !== undefined;
     }
     return false;
   }
@@ -486,7 +506,8 @@ const manager = new ApiXManager(
   new AccessLevelEvaluator(),
   dataManager,
   config,
-  cache
+  cache,
+  console
 );
 
 manager.registerAppMethod(loginMethod);

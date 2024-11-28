@@ -175,7 +175,7 @@ const runner = new TestSequenceRunner([
       return [request, await client.makeRequest(request)];
     },
     expectedResponse: {
-      statusCode: 200,
+      statusCode: 403,
       data: {
         success: false,
         message: 'Invalid username or password.'
