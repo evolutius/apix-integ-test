@@ -14,7 +14,10 @@ import {
   ApiXUrlQueryParameterPassthroughProcessor,
   ApiXUrlQueryParameter,
   ApiXHttpHeaders,
-  ApiXRequest
+  ApiXRequest,
+  MetricManager,
+  MetricManagerOptions,
+  MetricTags
 } from '@evlt/apix';
 import { Request } from 'express';
 import dotenv from 'dotenv';
@@ -500,6 +503,13 @@ class AccessLevelEvaluator extends ApiXAccessLevelEvaluator {
   }
 }
 
+class ApixMetricManager implements MetricManager {
+  public emit(metricName: string, value?: number, tags?: MetricTags) {
+    console.log
+      (`Emitting ${metricName} => ${value} with tags: ${JSON.stringify(tags ?? {})}`);
+  }
+}
+
 const config = new ApiXConfig();
 
 const manager = new ApiXManager(
@@ -509,6 +519,13 @@ const manager = new ApiXManager(
   cache,
   console
 );
+
+manager.setMetricManager(new ApixMetricManager(), {
+  namePrefix: 'ApixInteg:',
+  tags: {
+    type: 'apixIntegTest'
+  }
+});
 
 manager.registerAppMethod(loginMethod);
 
