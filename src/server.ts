@@ -229,8 +229,18 @@ const getCacheValueMethod: ApiXMethod = {
   characteristics: new Set([ApiXMethodCharacteristic.PublicUnownedData]),
   requestHandler: async (req, res) => {
     const value = await cache.valueForKey(req.params.key);
+    if (value === undefined || value === null) {
+      const data = {
+        success: false,
+        error: {
+          id: 'NotFound',
+          message: `No value found for key '${req.params.key}'`
+        }
+      };
+      return { status: 404, data };
+    }
     const data = {
-      success: value !== null && value !== undefined,
+      success: true,
       value
     };
     return { data };
@@ -282,7 +292,10 @@ const getQuoteMethod: ApiXMethod = {
     } else {
       const data = {
         success: false,
-        message: `Failed to find quote with id: ${req.params.id}`
+        error: {
+          id: 'NotFound',
+          message: `Failed to find quote with id: ${req.params.id}`
+        }
       };
       return { status: 404, data };
     }
@@ -350,9 +363,12 @@ const deleteQuoteMethod = {
       const message = (error as Error).message;
       const data = {
         success: false,
-        message
+        error: {
+          id: 'NotFound',
+          message,
+        }
       };
-      return { data };
+      return { status: 404, data };
     }
   },
   requestorOwnsResource: async (req) => {
@@ -468,10 +484,15 @@ const loginMethod = {
   requestHandler: (req, res) => {
     const { username, password } = req.jsonBody!;
     const token = dataManager.login(username, password);
-    const data = {
-      success: token !== undefined,
+    const data = token !== undefined ?{
+      success: true,
       authToken: token,
-      message: token !== undefined ? undefined : 'Invalid username or password.'
+    } : {
+      success: false,
+      error: {
+        id: 'Unauthorized',
+        message: 'Invalid username or password.'
+      }
     };
     return {
       status: token !== undefined ? 200 : 403,

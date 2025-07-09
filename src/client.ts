@@ -5,17 +5,38 @@ import {
   ApiXHttpMethod,
   ApiXRequest,
   ApiXRequestHeaders,
-  ApiXResponse
+  ApiXResponse,
+  ApiXEncryptedKeyStore,
+  ApiXSymmetricEncryptionService,
+  KeyProvider,
+  ApiXResponseError,
+  ApiXResponseInvalidRequestError,
+  ApiXResponseInvalidJsonBodyError,
+  ApiXRequestError,
+  ApiXResponseUnauthorizedRequestError
 } from '@evlt/apix-client';
 
 dotenv.config();
+
+class KeyProviderImpl implements KeyProvider {
+  public getKey(): string {
+    return process.env.KEY!;
+  }
+}
 
 class ApiXIntegClient {
   public authToken?: string;
   private client: ApiXClient;
 
   constructor(apiKey: string, appKey: string) {
-    this.client = new ApiXClient(apiKey, appKey)
+    const keyProvider = new KeyProviderImpl();
+    const keyStore = new ApiXEncryptedKeyStore(
+      new ApiXSymmetricEncryptionService('fast'),
+      keyProvider,
+      apiKey,
+      appKey
+    );
+    this.client = new ApiXClient(keyStore);
   }
 
   public request(
@@ -46,7 +67,20 @@ class ApiXIntegClient {
 
 interface TestSequence {
   readonly run: (client: ApiXIntegClient, lastRequest?: ApiXRequest) => Promise<[ApiXRequest, ApiXResponse]>;
-  readonly expectedResponse: ApiXResponse;
+  readonly expectedResponse?: ApiXResponse<any>;
+  readonly expectedError?: {
+    readonly id?: string;
+    readonly statusCode?: number;
+    readonly message: string;
+    readonly classType?: new (...args: any[]) => Error;
+  }
+}
+
+class TestError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TestError';
+  }
 }
 
 class TestSequenceRunner {
@@ -64,13 +98,50 @@ class TestSequenceRunner {
     const length = this.sequences.length;
     for (const sequence of this.sequences) {
       console.log(`Running test [${counter}/${length}]...`);
-      const [request, response] = await sequence.run(this.client, lastRequest);
-      lastRequest = request;
-      if (!isEqual(response, sequence.expectedResponse)) {
-        throw new Error(`Expected response and actual response are different: ${JSON.stringify(sequence.expectedResponse)} !== ${JSON.stringify(response)}`)
+      try {
+        const [request, response] = await sequence.run(this.client, lastRequest);
+        lastRequest = request;
+
+        if (sequence.expectedError) {
+          throw new TestError(`Expected error but got response: ${JSON.stringify(response)}.`);
+        }
+
+        if (!isEqual(response, sequence.expectedResponse)) {
+          throw new TestError(`Expected response and actual response are different: ${JSON.stringify(sequence.expectedResponse)} !== ${JSON.stringify(response)}`)
+        }
+      } catch (error) {
+        if (error instanceof TestError) {
+          throw error;  // Re-throw TestError to stop the sequence
+        }
+
+        if (!(error instanceof Error) || !this.errorsMatch(error, sequence.expectedError!)) {
+            throw new TestError(`Expected error ${sequence.expectedError?.classType!.name}: ${JSON.stringify(sequence.expectedError)} but got: ${error}`);
+        }
       }
       counter += 1;
     }
+  }
+
+  private errorsMatch(error: Error, expectedError: TestSequence['expectedError']): boolean {
+    if (!expectedError || !expectedError.classType || !expectedError.message) {
+      return false;
+    }
+
+    if (error instanceof ApiXRequestError) {
+      /// Only message and type need to match.
+      return error instanceof expectedError.classType
+        && error.message === expectedError.message;
+    }
+
+    if (error instanceof ApiXResponseError) {
+      /// Message, id, type, and statusCode need to match.
+      return error instanceof expectedError.classType
+        && error.message === expectedError.message
+        && error.id === expectedError.id
+        && error.statusCode === expectedError.statusCode;
+    }
+
+    return false;
   }
 }
 
@@ -117,12 +188,9 @@ const runner = new TestSequenceRunner([
       const request = lastRequest!;
       return [request, await client.makeRequest(request)];
     },
-    expectedResponse: {
-      statusCode: 401,
-      data: {
-        success: false,
-        message: 'This request is not valid.'
-      }
+    expectedError: {
+      message: 'This request has already been sent. API-X does not allow attempting to send the same request multiple times.',
+      classType: ApiXRequestError
     }
   },
   {
@@ -135,12 +203,11 @@ const runner = new TestSequenceRunner([
       await new Promise((resolve) => setTimeout(resolve, 10000));
       return [request, await client.makeRequest(request)];
     },
-    expectedResponse: {
-      statusCode: 401,
-      data: {
-        success: false,
-        message: 'This request is not valid.'
-      }
+    expectedError: {
+      id: 'invalidRequest',
+      message: 'This request is not valid.',
+      classType: ApiXResponseInvalidRequestError,
+      statusCode: 401
     }
   },
   {
@@ -150,15 +217,20 @@ const runner = new TestSequenceRunner([
         'http://localhost:3000/cache/myKey',
         'GET'
       );
-      request['protectedHeaders']['x-signature'] = 'invalidSignature';
+
+      request['initializeProtectedHeaders'] = (apiKey: string, appKey: string) => {
+        request['protectedHeaders']['x-api-key'] = apiKey;
+        request['protectedHeaders']['x-signature'] = 'invalidSignature';
+        request['protectedHeaders']['x-signature-nonce'] = 'some-nonce';
+      };
+
       return [request, await client.makeRequest(request)];
     },
-    expectedResponse: {
-      statusCode: 401,
-      data: {
-        success: false,
-        message: 'This request is not valid.'
-      }
+    expectedError: {
+      id: 'invalidRequest',
+      message: 'This request is not valid.',
+      classType: ApiXResponseInvalidRequestError,
+      statusCode: 401
     }
   },
   {
@@ -174,12 +246,11 @@ const runner = new TestSequenceRunner([
       );
       return [request, await client.makeRequest(request)];
     },
-    expectedResponse: {
-      statusCode: 403,
-      data: {
-        success: false,
-        message: 'Invalid username or password.'
-      }
+    expectedError: {
+      id: 'Unauthorized',
+      message: 'Invalid username or password.',
+      classType: ApiXResponseError,
+      statusCode: 403
     }
   },
   {
@@ -191,12 +262,11 @@ const runner = new TestSequenceRunner([
       );
       return [request, await client.makeRequest(request)];
     },
-    expectedResponse: {
+    expectedError: {
       statusCode: 401,
-      data: {
-        success: false,
-        message: 'This request is not authorized.'
-      }
+      id: 'unauthorizedRequest',
+      message: 'This request is not authorized.',
+      classType: ApiXResponseUnauthorizedRequestError
     }
   },
   {
@@ -211,8 +281,8 @@ const runner = new TestSequenceRunner([
         }
       );
       const response = await client.makeRequest(request);
-      client.authToken = response.data?.authToken as string;
-      delete response.data?.authToken;
+      client.authToken = (response.data as any)?.authToken as string;
+      delete (response.data as any)?.authToken;
       return [request, response];
     },
     expectedResponse: {
@@ -260,12 +330,11 @@ const runner = new TestSequenceRunner([
       );
       return [request, await client.makeRequest(request)];
     },
-    expectedResponse: {
-      statusCode: 400,
-      data: {
-        success: false,
-        message: 'Invalid request. Invalid HTTP body.'
-      }
+    expectedError: {
+      id: 'invalidJsonBody',
+      message: 'Invalid request. Invalid HTTP body.',
+      classType: ApiXResponseInvalidJsonBodyError,
+      statusCode: 400
     }
   },
   {
@@ -351,12 +420,11 @@ const runner = new TestSequenceRunner([
       );
       return [request, await client.makeRequest(request)];
     },
-    expectedResponse: {
-      statusCode: 200,
-      data: {
-        success: false,
-        message: 'No quote with ID 9 found.'
-      }
+    expectedError: {
+      id: 'NotFound',
+      message: 'No quote with ID 9 found.',
+      statusCode: 404,
+      classType: ApiXResponseError
     }
   },
   {
@@ -368,12 +436,11 @@ const runner = new TestSequenceRunner([
       );
       return [request, await client.makeRequest(request)];
     },
-    expectedResponse: {
-      statusCode: 400,
-      data: {
-        success: false,
-        message: 'Missing required parameter searchTerm'
-      }
+    expectedError: {
+      id: 'invalidRequestParameters',
+      message: 'Missing required parameter searchTerm',
+      classType: ApiXResponseError,
+      statusCode: 400
     }
   },
   {
