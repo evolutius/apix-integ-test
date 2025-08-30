@@ -1,35 +1,43 @@
 import {
-  ApiXManager,
-  ApiXMethod,
-  ApiXMethodCharacteristic,
-  ApiXDataManager,
-  ApiXAccessLevelEvaluator,
-  ApiXRedisStore,
+  AppManager,
+  EndpointMethod,
+  MethodCharacteristic,
+  DataManager,
+  AccessLevelEvaluator,
+  RedisStore,
   ApiXConfig,
-  ApiXRequestInputSchema,
-  ApiXCacheValue,
-  ApiXHttpBodyValidator,
-  ApiXUrlQueryParameterValidator,
-  ApiXUrlQueryParameterProcessor,
-  ApiXUrlQueryParameterPassthroughProcessor,
-  ApiXUrlQueryParameter,
-  ApiXHttpHeaders,
-  ApiXRequest,
+  RequestInputSchema,
+  CacheValue,
+  HttpBodyValidator,
+  UrlQueryParameterValidator,
+  UrlQueryParameterProcessor,
+  UrlQueryParameterPassthroughProcessor,
+  UrlQueryParameter,
+  HttpHeaders,
+  Request,
+  Response,
   MetricManager,
   MetricManagerOptions,
-  MetricTags
+  MetricTags,
+  EndpointGenerator,
+  Route,
+  PublicResource,
+  HttpBody,
+  AuthRequired,
+  OwnerEvaluator,
+  QueryParameters,
+  BaseEndpointGenerator
 } from '@evlt/apix';
-import { Request } from 'express';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 
 dotenv.config();
 
 const getAuthToken = <
-  QuerySchema extends ApiXRequestInputSchema,
-  BodySchema extends ApiXRequestInputSchema
->(req: ApiXRequest<QuerySchema, BodySchema>): string | undefined => {
-  return req.header(ApiXHttpHeaders.AuthToken)?.split(' ')[1];
+  QuerySchema extends RequestInputSchema,
+  BodySchema extends RequestInputSchema
+>(req: Request<QuerySchema, BodySchema>): string | undefined => {
+  return req.header(HttpHeaders.AuthToken)?.split(' ')[1];
 }
 
 //// Types ////
@@ -111,7 +119,7 @@ const QUOTES: Record<string, Quote> = {
   }
 };
 
-class DataManager implements ApiXDataManager {
+class TestDataManager implements DataManager {
   getAppKeyForApiKey(apiKey: string): string | Promise<string> | null {
     /// single app has access
     return apiKey === process.env.API_KEY ? process.env.APP_KEY! : null;
@@ -202,11 +210,11 @@ class DataManager implements ApiXDataManager {
   }
 }
 
-const dataManager = new DataManager();
+const dataManager = new TestDataManager();
 
 //// END OF Data Configuration ////
 
-const cache = new ApiXRedisStore();
+const cache = new RedisStore();
 
 cache.connect()
   .then(() => {
@@ -223,11 +231,26 @@ cache.connect()
   });
 
 //// Methods and Schema Definitions ////
-const getCacheValueMethod: ApiXMethod = {
-  entity: 'cache',
-  method: ':key',
-  characteristics: new Set([ApiXMethodCharacteristic.PublicUnownedData]),
-  requestHandler: async (req, res) => {
+
+interface SetCacheValueSchema extends RequestInputSchema {
+  readonly key: string;
+  readonly value: CacheValue;
+  readonly ttl?: number;
+}
+
+class SetCacheValueBodyValidator implements HttpBodyValidator<SetCacheValueSchema> {
+  isValid(body: SetCacheValueSchema): boolean {
+    return body.key !== undefined && body.key !== null
+      && body.value !== undefined && body.value !== null;
+  }
+}
+
+@EndpointGenerator('cache')
+class CacheEndpointGenerator {
+
+  @Route(':key')
+  @PublicResource()
+  async getCacheValue(req: Request, res: Express.Response): Promise<Response> {
     const value = await cache.valueForKey(req.params.key);
     if (value === undefined || value === null) {
       const data = {
@@ -245,29 +268,11 @@ const getCacheValueMethod: ApiXMethod = {
     };
     return { data };
   }
-};
 
-interface SetCacheValueSchema extends ApiXRequestInputSchema {
-  readonly key: string;
-  readonly value: ApiXCacheValue;
-  readonly ttl?: number;
-}
-
-class SetCacheValueBodyValidator implements ApiXHttpBodyValidator<SetCacheValueSchema> {
-  isValid(body: SetCacheValueSchema): boolean {
-    return body.key !== undefined && body.key !== null
-      && body.value !== undefined && body.value !== null;
-  }
-}
-
-const setCacheValueMethod = {
-  entity: 'cache',
-  method: 'add',
-  characteristics: new Set([ApiXMethodCharacteristic.PublicUnownedData]),
-  jsonBodyRequired: true,
-  jsonBodyValidator: new SetCacheValueBodyValidator(),
-  httpMethod: 'PUT',
-  requestHandler: async (req, res) => {
+  @Route('add', 'PUT')
+  @HttpBody(new SetCacheValueBodyValidator(), true)
+  @PublicResource()
+  async addCacheValue(req: Request<Record<string, never>, SetCacheValueSchema>, res: Express.Response): Promise<Response> {
     const body = req.jsonBody!;
     await cache.setValueForKey(body.value, body.key, body.ttl);
     const data = {
@@ -276,15 +281,87 @@ const setCacheValueMethod = {
     };
     return { data };
   }
-} as ApiXMethod<Record<string, never>, SetCacheValueSchema>;
+}
 
 /// Quotes Methods ///
-const getQuoteMethod: ApiXMethod = {
-  entity: 'quotes',
-  method: ':id',
-  characteristics: new Set([ApiXMethodCharacteristic.PublicOwnedData]),
-  requestHandler: async (req, res) => {
-    const quote = await dataManager.getQuoteWithId(req.params.id);
+interface AddQuoteSchema extends RequestInputSchema {
+  readonly content: string;
+  readonly author: string;
+  readonly date: string;
+}
+
+class AddQuoteSchemaValidator implements HttpBodyValidator<AddQuoteSchema> {
+  isValid(body: AddQuoteSchema): boolean {
+    const regex = /^[a-zA-Z0-9?.;,! ]+$/;
+    return body.author !== undefined
+      && body.content !== undefined
+      && body.date !== undefined
+      && regex.test(body.author)
+      && regex.test(body.content)
+      && body.date.length > 0;
+  }
+}
+
+interface DeleteQuoteSchema extends RequestInputSchema {
+  readonly quoteId: string;
+}
+
+interface SearchQuoteSchema extends RequestInputSchema {
+  readonly searchTerm: string;
+  readonly author?: string;
+  readonly sortKey?: string;
+  readonly ascendingSort?: boolean
+};
+
+class QuoteSearchTermQueryParameterValidator implements UrlQueryParameterValidator {
+  isValid(name: string, value: string): boolean {
+    const regex = /^[a-zA-Z0-9 ]+$/;
+    return regex.test(value);
+  }
+}
+
+class QuoteAuthorQueryParameterValidator implements UrlQueryParameterValidator {
+  isValid(name: string, value: string): boolean {
+    const regex = /^[a-zA-Z0-9 ]+$/;
+    return regex.test(value);
+  }
+}
+
+class QuoteSortKeyQueryParameterValidator implements UrlQueryParameterValidator {
+  isValid(name: string, value: string): boolean {
+    return ['content', 'date', 'author'].includes(value);
+  }
+}
+
+class BooleanQueryParameterValidator implements UrlQueryParameterValidator {
+  isValid(name: string, value: string): boolean {
+    const lowercased = value.toLowerCase();
+    return lowercased === 'true' || lowercased === 'false'
+      || lowercased === '1' || lowercased === '0';
+  }
+}
+
+class BooleanQueryParameterProcessor implements UrlQueryParameterProcessor<boolean> {
+  process(name: string, value: string): [string, boolean] {
+    const lowercased = value.toLowerCase();
+    return [name, lowercased === 'true' || lowercased === '1' ? true : false];
+  }
+}
+
+const passthroughProcessor = new UrlQueryParameterPassthroughProcessor();
+
+@EndpointGenerator('quotes')
+class QuotesEndpointGenerator extends BaseEndpointGenerator {
+
+  constructor(private readonly dataManager: TestDataManager) {
+    super();
+  }
+
+  @Route(':id')
+  @PublicResource()
+  @AuthRequired()
+  async getQuote(req: Request): Promise<Response> {
+    const quote = await this.dataManager.getQuoteWithId(req.params.id);
 
     if (quote) {
       const data = { success: true, quote };
@@ -299,61 +376,28 @@ const getQuoteMethod: ApiXMethod = {
       };
       return { status: 404, data };
     }
-  },
-  requestorOwnsResource: () => false  /// no consequence
-};
-
-interface AddQuoteSchema extends ApiXRequestInputSchema {
-  readonly content: string;
-  readonly author: string;
-  readonly date: string;
-}
-
-class AddQuoteSchemaValidator implements ApiXHttpBodyValidator<AddQuoteSchema> {
-  isValid(body: AddQuoteSchema): boolean {
-    const regex = /^[a-zA-Z0-9?.;,! ]+$/;
-    return body.author !== undefined
-      && body.content !== undefined
-      && body.date !== undefined
-      && regex.test(body.author)
-      && regex.test(body.content)
-      && body.date.length > 0;
   }
-}
 
-const addQuoteMethod = {
-  entity: 'quotes',
-  method: 'add',
-  httpMethod: 'PUT',
-  characteristics: new Set([ApiXMethodCharacteristic.PublicOwnedData]),
-  jsonBodyRequired: true,
-  jsonBodyValidator: new AddQuoteSchemaValidator(),
-  requestHandler: (req, res) => {
+  @Route('add', 'PUT')
+  @HttpBody(new AddQuoteSchemaValidator(), true)
+  @PublicResource()
+  async addQuote(req: Request<Record<string, never>, AddQuoteSchema>): Promise<Response> {
     const addQuote = req.jsonBody!;
-    const quote = dataManager.addQuote(addQuote.content, addQuote.author, addQuote.date);
+    const quote = this.dataManager.addQuote(addQuote.content, addQuote.author, addQuote.date);
     const data = {
       success: true,
       quote
     };
     return { data };
-  },
-  requestorOwnsResource: () => true  // as long as requestor is authenticated, they will own the quote they create
-} as ApiXMethod<Record<string, never>, AddQuoteSchema>;
+  }
 
-interface DeleteQuoteSchema extends ApiXRequestInputSchema {
-  readonly quoteId: string;
-}
-
-const deleteQuoteMethod = {
-  entity: 'quotes',
-  method: 'delete',
-  httpMethod: 'DELETE',
-  characteristics: new Set([ApiXMethodCharacteristic.PublicOwnedData]),
-  jsonBodyRequired: true,
-  requestHandler: (req, res) => {
+  @Route('delete', 'DELETE')
+  @PublicResource()
+  @AuthRequired()
+  async deleteQuote(req: Request<Record<string, never>, DeleteQuoteSchema>): Promise<Response> {
     const { quoteId } = req.jsonBody!;
     try {
-      dataManager.deleteQuote(quoteId);
+      this.dataManager.deleteQuote(quoteId);
       const data = {
         success: true,
         message: `Successfully deleted quote with ID ${quoteId}`
@@ -370,93 +414,36 @@ const deleteQuoteMethod = {
       };
       return { status: 404, data };
     }
-  },
-  requestorOwnsResource: async (req) => {
-    const { quoteId } = req.jsonBody!;
-    const quote = await dataManager.getQuoteWithId(quoteId);
-    const token = getAuthToken(req);
-    if (token) {
-      const claim = dataManager.verifyToken(token) as { username: string };
-      return claim.username === quote?.ownerUserId;
-    }
-    return true;
   }
-} as ApiXMethod<Record<string, never>, DeleteQuoteSchema>;
 
-interface SearchQuoteSchema extends ApiXRequestInputSchema {
-  readonly searchTerm: string;
-  readonly author?: string;
-  readonly sortKey?: string;
-  readonly ascendingSort?: boolean
-};
-
-class QuoteSearchTermQueryParameterValidator implements ApiXUrlQueryParameterValidator {
-  isValid(name: string, value: string): boolean {
-    const regex = /^[a-zA-Z0-9 ]+$/;
-    return regex.test(value);
-  }
-}
-
-class QuoteAuthorQueryParameterValidator implements ApiXUrlQueryParameterValidator {
-  isValid(name: string, value: string): boolean {
-    const regex = /^[a-zA-Z0-9 ]+$/;
-    return regex.test(value);
-  }
-}
-
-class QuoteSortKeyQueryParameterValidator implements ApiXUrlQueryParameterValidator {
-  isValid(name: string, value: string): boolean {
-    return ['content', 'date', 'author'].includes(value);
-  }
-}
-
-class BooleanQueryParameterValidator implements ApiXUrlQueryParameterValidator {
-  isValid(name: string, value: string): boolean {
-    const lowercased = value.toLowerCase();
-    return lowercased === 'true' || lowercased === 'false'
-      || lowercased === '1' || lowercased === '0';
-  }
-}
-
-class BooleanQueryParameterProcessor implements ApiXUrlQueryParameterProcessor<boolean> {
-  process(name: string, value: string): [string, boolean] {
-    const lowercased = value.toLowerCase();
-    return [name, lowercased === 'true' || lowercased === '1' ? true : false];
-  }
-}
-
-const passthroughProcessor = new ApiXUrlQueryParameterPassthroughProcessor();
-
-const searchQuoteMethod: ApiXMethod<SearchQuoteSchema> = {
-  entity: 'quotes',
-  method: 'search',
-  characteristics: new Set([ApiXMethodCharacteristic.PublicUnownedData]),
-  queryParameters: [
-    new ApiXUrlQueryParameter(
+  @Route('search', 'GET', 0)
+  @QueryParameters([
+    new UrlQueryParameter(
       'searchTerm',
       new QuoteSearchTermQueryParameterValidator(),
       passthroughProcessor,
       true /// required
     ),
-    new ApiXUrlQueryParameter(
+    new UrlQueryParameter(
       'author',
       new QuoteAuthorQueryParameterValidator(),
       passthroughProcessor
     ),
-    new ApiXUrlQueryParameter(
+    new UrlQueryParameter(
       'sortKey',
       new QuoteSortKeyQueryParameterValidator(),
       passthroughProcessor
     ),
-    new ApiXUrlQueryParameter(
+    new UrlQueryParameter(
       'ascendingSort',
       new BooleanQueryParameterValidator(),
       new BooleanQueryParameterProcessor()
     )
-  ],
-  requestHandler: async (req, res) => {
+  ])
+  @PublicResource()
+  async search(req: Request<SearchQuoteSchema>): Promise<Response> {
     const queryParams = req.queryParameters!
-    const quotes = dataManager.searchQuotes(
+    const quotes = this.dataManager.searchQuotes(
       queryParams.searchTerm,
       queryParams.author,
       queryParams.sortKey,
@@ -468,10 +455,27 @@ const searchQuoteMethod: ApiXMethod<SearchQuoteSchema> = {
     };
     return { data };
   }
-};
+
+  @OwnerEvaluator()
+  async owns(req: Request<Record<string, never>, DeleteQuoteSchema>): Promise<boolean> {
+    if (typeof req.jsonBody !== 'object' || req.jsonBody === null) {
+      /// This method is only applicable to quote deletion requests
+      return false;
+    }
+
+    const { quoteId } = req.jsonBody!;
+    const quote = await this.dataManager.getQuoteWithId(quoteId);
+    const token = getAuthToken(req);
+    if (token) {
+      const claim = this.dataManager.verifyToken(token) as { username: string };
+      return claim.username === quote?.ownerUserId;
+    }
+    return true;
+  }
+}
 
 /// User Auth Methods ///
-interface UserLoginSchema extends ApiXRequestInputSchema {
+interface UserLoginSchema extends RequestInputSchema {
   readonly username: string;
   readonly password: string;
 }
@@ -480,7 +484,7 @@ const loginMethod = {
   method: 'login',
   httpMethod: 'POST',
   jsonBodyRequired: true,
-  characteristics: new Set([ApiXMethodCharacteristic.PublicUnownedData]),
+  characteristics: new Set([MethodCharacteristic.PublicUnownedData]),
   requestHandler: (req, res) => {
     const { username, password } = req.jsonBody!;
     const token = dataManager.login(username, password);
@@ -499,21 +503,21 @@ const loginMethod = {
       data
     };
   }
-} as ApiXMethod<Record<string, never>, UserLoginSchema>;
+} as EndpointMethod<Record<string, never>, UserLoginSchema>;
 
 //// END OF Methods and Schema Definitions ////
 
-class AccessLevelEvaluator extends ApiXAccessLevelEvaluator {
+class TestAccessLevelEvaluator extends AccessLevelEvaluator {
 
   tokenPayload(token: string): string | jwt.JwtPayload | undefined {
     return dataManager.verifyToken(token);
   }
 
   protected isAuthenticatedRequestor<
-    QuerySchema extends ApiXRequestInputSchema,
-    BodySchema extends ApiXRequestInputSchema
+    QuerySchema extends RequestInputSchema,
+    BodySchema extends RequestInputSchema
   >(
-    req: ApiXRequest<QuerySchema, BodySchema>
+    req: Request<QuerySchema, BodySchema>
   ): Promise<boolean> | boolean {
     const token = getAuthToken(req);
     if (token) {
@@ -533,8 +537,8 @@ class ApixMetricManager implements MetricManager {
 
 const config = new ApiXConfig();
 
-const manager = new ApiXManager(
-  new AccessLevelEvaluator(),
+const manager = new AppManager(
+  new TestAccessLevelEvaluator(),
   dataManager,
   config,
   cache,
@@ -550,13 +554,9 @@ manager.setMetricManager(new ApixMetricManager(), {
 
 manager.registerAppMethod(loginMethod);
 
-manager.registerAppMethod(getCacheValueMethod);
-manager.registerAppMethod(setCacheValueMethod);
+manager.registerEndpointGenerator(new CacheEndpointGenerator());
 
-manager.registerAppMethod(addQuoteMethod);
-manager.registerAppMethod(deleteQuoteMethod);
-manager.registerAppMethod(searchQuoteMethod);
-manager.registerAppMethod(getQuoteMethod);
+manager.registerEndpointGenerator(new QuotesEndpointGenerator(dataManager));
 
 /// Run the server
 manager.start();

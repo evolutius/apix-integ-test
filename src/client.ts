@@ -146,6 +146,7 @@ class TestSequenceRunner {
 }
 
 const runner = new TestSequenceRunner([
+  /// Test 1
   {
     run: async (client, lastRequest) => {
       const request = client.request(
@@ -166,6 +167,7 @@ const runner = new TestSequenceRunner([
       statusCode: 200
     }
   },
+  /// Test 2
   {
     run: async (client, lastRequest) => {
       const request = client.request(
@@ -182,6 +184,7 @@ const runner = new TestSequenceRunner([
       statusCode: 200
     }
   },
+  /// Test 3
   {
     run: async (client, lastRequest) => {
       /// Repeat request should be rejected
@@ -193,6 +196,7 @@ const runner = new TestSequenceRunner([
       classType: ApiXRequestError
     }
   },
+  /// Test 4
   {
     run: async (client, lastRequest) => {
       /// Old requests are rejected
@@ -210,6 +214,7 @@ const runner = new TestSequenceRunner([
       statusCode: 401
     }
   },
+  /// Test 5
   {
     run: async (client, lastRequest) => {
       /// Invalid signatures are rejected
@@ -233,6 +238,7 @@ const runner = new TestSequenceRunner([
       statusCode: 401
     }
   },
+  /// Test 6
   {
     run: async (client, lastRequest) => {
       /// Invalid credentials login
@@ -253,6 +259,7 @@ const runner = new TestSequenceRunner([
       statusCode: 403
     }
   },
+  /// Test 7
   {
     run: async (client, lastRequest) => {
       /// Get quotes without authentication!
@@ -269,6 +276,7 @@ const runner = new TestSequenceRunner([
       classType: ApiXResponseUnauthorizedRequestError
     }
   },
+  /// Test 8
   {
     run: async (client, lastRequest) => {
       /// Login with valid credentials
@@ -292,6 +300,7 @@ const runner = new TestSequenceRunner([
       }
     }
   },
+  /// Test 9
   {
     run: async (client, lastRequest) => {
       /// Get quotes
@@ -315,6 +324,7 @@ const runner = new TestSequenceRunner([
       }
     }
   },
+  /// Test 10
   {
     run: async (client, lastRequest) => {
       /// Add quotes with invalid body
@@ -337,6 +347,7 @@ const runner = new TestSequenceRunner([
       statusCode: 400
     }
   },
+  /// Test 11
   {
     run: async (client, lastRequest) => {
       /// Add quotes
@@ -365,6 +376,7 @@ const runner = new TestSequenceRunner([
       }
     }
   },
+  /// Test 12
   {
     run: async (client, lastRequest) => {
       /// Get quotes
@@ -388,6 +400,7 @@ const runner = new TestSequenceRunner([
       }
     }
   },
+  /// Test 13
   {
     run: async (client, lastRequest) => {
       /// Delete quotes
@@ -408,6 +421,7 @@ const runner = new TestSequenceRunner([
       }
     }
   },
+  /// Test 14
   {
     run: async (client, lastRequest) => {
       /// Delete quotes
@@ -427,6 +441,7 @@ const runner = new TestSequenceRunner([
       classType: ApiXResponseError
     }
   },
+  /// Test 15
   {
     run: async (client, lastRequest) => {
       /// Search quotes: invalid due to missing required `searchTerm`
@@ -443,6 +458,7 @@ const runner = new TestSequenceRunner([
       statusCode: 400
     }
   },
+  /// Test 16
   {
     run: async (client, lastRequest) => {
       /// Search quotes
@@ -468,6 +484,7 @@ const runner = new TestSequenceRunner([
       }
     }
   },
+  /// Test 17
   {
     run: async (client, lastRequest) => {
       /// Search quotes
@@ -500,6 +517,7 @@ const runner = new TestSequenceRunner([
       }
     }
   },
+  /// Test 18
   {
     run: async (client, lastRequest) => {
       /// Search quotes
